@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy a t2.micro Amazon Linux EC2 instance in McpProxyVpc private subnet'
+
+Parameters:
+  InstanceName:
+    Type: String
+    Default: 'strands-ec2-demo-instance'
+    Description: 'Name tag for the EC2 instance'
+
+Resources:
+  # Security Group for the EC2 instance
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Security group for strands-ec2-demo instance'
+      VpcId: 'vpc-0d30a49915b12712c'  # McpProxyVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: '10.0.0.0/16'  # Allow SSH from within VPC
+          Description: 'SSH access from VPC'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '10.0.0.0/16'  # Allow HTTP from within VPC
+          Description: 'HTTP access from VPC'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: '10.0.0.0/16'  # Allow HTTPS from within VPC
+          Description: 'HTTPS access from VPC'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: '0.0.0.0/0'
+          Description: 'Allow all outbound traffic'
+      Tags:
+        - Key: Name
+          Value: !Sub '${InstanceName}-sg'
+        - Key: Project
+          Value: 'strands-ec2-demo'
+
+  # IAM Role for EC2 instance (basic role for SSM access)
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub '${InstanceName}-role'
+        - Key: Project
+          Value: 'strands-ec2-demo'
+
+  # Instance Profile for the IAM Role
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # EC2 Instance
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: 'ami-0b3bdf5557e164e06'  # Amazon Linux 2 AMI (latest as of deployment)
+      InstanceType: 't2.micro'
+      SubnetId: 'subnet-043a090ca61646432'  # McpProxyVpc privateSubnet1 (ap-southeast-2a)
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y amazon-ssm-agent
+          systemctl enable amazon-ssm-agent
+          systemctl start amazon-ssm-agent
+          
+          # Install basic tools
+          yum install -y htop wget curl git
+          
+          # Create a simple web server for testing
+          yum install -y httpd
+          systemctl enable httpd
+          systemctl start httpd
+          
+          # Create a simple index page
+          cat > /var/www/html/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Strands EC2 Demo</title>
+          </head>
+          <body>
+              <h1>Welcome to Strands EC2 Demo Instance</h1>
+              <p>This is a t2.micro Amazon Linux instance deployed in McpProxyVpc private subnet.</p>
+              <p>Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)</p>
+              <p>Availability Zone: $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)</p>
+              <p>Private IP: $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)</p>
+          </body>
+          </html>
+          EOF
+          
+          # Replace placeholders with actual values
+          sed -i "s/\$(curl -s http:\/\/169.254.169.254\/latest\/meta-data\/instance-id)/$(curl -s http://169.254.169.254/latest/meta-data/instance-id)/g" /var/www/html/index.html
+          sed -i "s/\$(curl -s http:\/\/169.254.169.254\/latest\/meta-data\/placement\/availability-zone)/$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)/g" /var/www/html/index.html
+          sed -i "s/\$(curl -s http:\/\/169.254.169.254\/latest\/meta-data\/local-ipv4)/$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)/g" /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceName
+        - Key: Project
+          Value: 'strands-ec2-demo'
+        - Key: Environment
+          Value: 'demo'
+        - Key: DeployedBy
+          Value: 'CloudFormation'
+
+Outputs:
+  InstanceId:
+    Description: 'EC2 Instance ID'
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  PrivateIP:
+    Description: 'Private IP address of the EC2 instance'
+    Value: !GetAtt EC2Instance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateIP'
+
+  SecurityGroupId:
+    Description: 'Security Group ID'
+    Value: !Ref EC2SecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+
+  AvailabilityZone:
+    Description: 'Availability Zone of the instance'
+    Value: !GetAtt EC2Instance.AvailabilityZone
+    Export:
+      Name: !Sub '${AWS::StackName}-AvailabilityZone'
